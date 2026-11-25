@@ -23,4 +23,4 @@ rec helm upgrade --install prometheus prometheus-community/prometheus --version 
 rec helm upgrade --install vault hashicorp/vault --version 0.34.1 -n vault --create-namespace -f deploy/platform/vault-values.yaml
 rec kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
 rec kubectl -n argo-rollouts rollout status deploy/argo-rollouts --timeout=300s
-rec kubectl get pods -A --sort-by=.metadata.namespace "|" grep -v "^default "
+rec kubectl get pods -A --sort-by=.metadata.namespace '|' grep -E "'^(NAMESPACE|argo-rollouts|argocd|cert-manager|cnpg-system|external-secrets|monitoring|vault) '"
