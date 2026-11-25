@@ -111,3 +111,147 @@ Success! Data written to: auth/kubernetes/role/backup
 $ vault read -format=json auth/kubernetes/role/textstats | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, audience, policies, token_ttl}'
 {"bound_service_account_names":["textstats-secrets"],"bound_service_account_namespaces":["textstats"],"audience":"vault","policies":["textstats-read"],"token_ttl":900}
 
+$ kubectl -n textstats get externalsecret
+NAME                       STORETYPE     STORE   REFRESH INTERVAL   STATUS         READY   LAST SYNC
+textstats-backup-s3        SecretStore   vault   1m                 SecretSynced   True    43s
+textstats-database-url     SecretStore   vault   1m                 SecretSynced   True    27s
+textstats-db-credentials   SecretStore   vault   1m                 SecretSynced   True    27s
+
+$ kubectl -n textstats get secret textstats-db-credentials -o jsonpath='{.type}  owner={.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}  keys={.data}{"\n"}' | sed -E 's/"[A-Za-z0-9+\/=]{16,}"/<redacted>/g'
+kubernetes.io/basic-auth  owner=ExternalSecret/textstats-db-credentials  keys={"password":<redacted>,"username":"dGV4dHN0YXRz"}
+
+$ echo "vault: $(vault_fp)   kubernetes secret: $(k8s_fp)"
+vault: a27b6eef93c8   kubernetes secret: a27b6eef93c8
+
+$ P=$(kubectl -n textstats get secret textstats-db-credentials -o jsonpath={.data.password} | base64 -d); echo "occurrences of the live password in all git history: $(git log -p --all | grep -cF "$P" || true)"
+occurrences of the live password in all git history: 0
+
+$ grep -rn password deploy/gitops | grep -v ^\s*# | head -5
+deploy/gitops/secrets.yaml:27:# Database login for the "textstats" role; CloudNativePG keeps the role's password in sync with it
+deploy/gitops/secrets.yaml:45:    - secretKey: password
+deploy/gitops/secrets.yaml:46:      remoteRef: {key: textstats/db, property: password}
+deploy/gitops/secrets.yaml:60:        DATABASE_URL: "postgresql://{{ .username }}:{{ .password }}@textstats-db-rw:5432/textstats"
+deploy/gitops/secrets.yaml:64:    - secretKey: password
+
+$ docker run --rm -v $PWD:/repo ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --redact --no-banner 2>&1 | tail -2
+[90m4:06PM[0m [32mINF[0m [1mscanned ~112718 bytes (112.72 KB) in 126ms[0m
+[90m4:06PM[0m [32mINF[0m [1mno leaks found[0m
+
+$ JWT=$(kubectl -n textstats create token textstats-secrets --audience vault --duration 10m)
+  export VAULT_TOKEN=$(vault write -field=token auth/kubernetes/login role=textstats jwt="$JWT")
+  vault token lookup -format=json | jq -c ".data | {display_name, policies, ttl}"
+  echo "--- read own database login:"; vault kv get -field=username secret/textstats/db; echo
+  echo "--- read backup admin keys:"; vault kv get secret/backup/seaweedfs-admin 2>&1 | grep -E "Code|permission" | head -2
+  echo "--- overwrite own secret:"; vault kv put secret/textstats/db password=x 2>&1 | grep -E "Code|permission" | head -2
+{"display_name":"kubernetes-textstats-textstats-secrets","policies":["default","textstats-read"],"ttl":900}
+--- read own database login:
+textstats
+--- read backup admin keys:
+Code: 403. Errors:
+	* permission denied
+--- overwrite own secret:
+Code: 403. Errors:
+	* permission denied
+
+$ kubectl -n vault exec vault-0 -- cat /vault/audit/audit.log | jq -c 'select(.type=="response" and (.request.path | test("secret/data/(textstats|backup)"))) | {time, who: .auth.display_name, op: .request.operation, path: .request.path, error, password: .response.data.data.password}' | tail -6
+{"time":"2026-11-25T16:06:13.199724836Z","who":"kubernetes-textstats-textstats-secrets","op":"read","path":"secret/data/textstats/db","error":null,"password":"hmac-sha256:7f265097c23a5197ebe02e865b4d31b1db68d5e6b643912c9700d2346f733e96"}
+{"time":"2026-11-25T16:06:13.200517378Z","who":"kubernetes-textstats-textstats-secrets","op":"read","path":"secret/data/textstats/db","error":null,"password":"hmac-sha256:7f265097c23a5197ebe02e865b4d31b1db68d5e6b643912c9700d2346f733e96"}
+{"time":"2026-11-25T16:06:41.271708645Z","who":"root","op":"read","path":"secret/data/textstats/db","error":null,"password":"hmac-sha256:7f265097c23a5197ebe02e865b4d31b1db68d5e6b643912c9700d2346f733e96"}
+{"time":"2026-11-25T16:06:42.431758571Z","who":"kubernetes-textstats-textstats-secrets","op":"read","path":"secret/data/textstats/db","error":null,"password":"hmac-sha256:7f265097c23a5197ebe02e865b4d31b1db68d5e6b643912c9700d2346f733e96"}
+{"time":"2026-11-25T16:06:42.511707938Z","who":"kubernetes-textstats-textstats-secrets","op":"read","path":"secret/data/backup/seaweedfs-admin","error":"1 error occurred:\n\t* permission denied\n\n","password":null}
+{"time":"2026-11-25T16:06:42.576705218Z","who":"kubernetes-textstats-textstats-secrets","op":"update","path":"secret/data/textstats/db","error":"1 error occurred:\n\t* permission denied\n\n","password":null}
+
+$ vault kv put secret/textstats/db username=textstats password=$(openssl rand -hex 20) | grep -E "^(version|created_time)"; echo "rotated in Vault at $(date -u +%H:%M:%S), fingerprint now $(vault_fp)"
+created_time       2026-11-25T16:06:54.341767802Z
+version            3
+rotated in Vault at 16:06:54, fingerprint now 6052e151bf5b
+
+$ kubectl -n textstats annotate externalsecret textstats-db-credentials textstats-database-url force-sync=$(date +%s) --overwrite
+externalsecret.external-secrets.io/textstats-db-credentials annotated
+externalsecret.external-secrets.io/textstats-database-url annotated
+
+$ until [ "$(k8s_fp)" = "$(vault_fp)" ]; do sleep 1; done; echo "kubernetes secret updated at $(date -u +%H:%M:%S)"
+kubernetes secret updated at 16:06:54
+
+$ T=$(date -u +%Y-%m-%dT%H:%M:%SZ); kubectl argo rollouts restart text-stats -n textstats
+  until [ "$(restarted $T)" = 10 ] && [ "$(pods)" = 10 ]; do sleep 2; done; echo "all 10 app pods replaced and ready with the new secret at $(date -u +%H:%M:%S)"
+rollout 'text-stats' restarts in 0s
+all 10 app pods replaced and ready with the new secret at 16:07:07
+
+$ kubectl -n textstats wait pod/probe-rotation --for=jsonpath={.status.phase}=Succeeded --timeout=300s
+pod/probe-rotation condition met
+
+$ kubectl -n textstats logs probe-rotation | grep -vE '^ +[0-9]+  write-ok=[0-9]+$'
+second  outcomes
+    11  error-ConnectionResetError=1  http-503=46  write-ok=52
+    12  error-URLError=10  http-503=49
+    14  error-URLError=2  http-503=21
+    15  error-URLError=2  http-503=8
+    16  error-ConnectionResetError=1  error-URLError=1  http-503=6
+    17  error-ConnectionResetError=2  error-URLError=1  http-503=6  write-ok=2
+    18  error-ConnectionResetError=1  error-URLError=7  http-503=8  write-ok=6
+    19  error-URLError=2  http-503=1  write-ok=1
+    20  error-ConnectionResetError=1  error-URLError=2
+    21  error-URLError=2
+    32  error-URLError=1  write-ok=122
+    33  error-URLError=1  write-ok=68
+    50  error-URLError=2  write-ok=89
+    51  error-URLError=2  write-ok=11
+    61  error-URLError=1  write-ok=133
+    62  error-URLError=1  write-ok=71
+    76  error-URLError=3  write-ok=89
+    77  error-URLError=1  write-ok=5
+    82  error-URLError=1  write-ok=116
+    89  error-URLError=2  write-ok=130
+    90  error-URLError=2  write-ok=26
+    92  error-URLError=3  write-ok=35
+    97  error-URLError=4  write-ok=81
+    99  error-URLError=3  write-ok=33
+   103  error-URLError=1  write-ok=119
+   117  error-URLError=3  write-ok=81
+   118  error-URLError=1  write-ok=12
+   119  error-URLError=1  write-ok=25
+
+total=19775 failed=213 success_rate=98.92%
+outcomes: error-ConnectionResetError=6, error-URLError=62, http-503=145, write-ok=19562
+first_failure_at=11.49s last_failure_at=119.36s failure_window=107.88s
+
+$ P=$(kubectl -n textstats get cluster textstats-db -o jsonpath={.status.currentPrimary})
+  echo -n "old password: "; kubectl -n textstats exec $P -c postgres -- psql "postgresql://textstats:$OLD@textstats-db-rw/textstats" -Atc "SELECT 1" 2>&1 | grep -oE "password authentication failed[^,]*|^1$"
+  NEW=$(kubectl -n textstats get secret textstats-db-credentials -o jsonpath={.data.password} | base64 -d)
+  echo -n "new password: "; kubectl -n textstats exec $P -c postgres -- psql "postgresql://textstats:$NEW@textstats-db-rw/textstats" -Atc "SELECT current_user"
+old password: password authentication failed for user "textstats"
+password authentication failed for user "textstats"
+new password: textstats
+
+$ vault kv metadata get secret/textstats/db | grep -E '^(current_version|created_time|updated_time)'
+created_time            2026-11-25T15:11:18.35679508Z
+current_version         3
+updated_time            2026-11-25T16:06:54.341767802Z
+created_time     2026-11-25T15:11:18.35679508Z
+created_time     2026-11-25T16:04:13.486220475Z
+created_time     2026-11-25T16:06:54.341767802Z
+
+$ kubectl -n textstats logs $(kubectl -n textstats get cluster textstats-db -o jsonpath={.status.currentPrimary}) -c postgres --since=30m | jq -r "select(.record.error_severity == \"FATAL\") | .ts[0:19] + \"  \" + .record.message" | sort | uniq -c
+  50 2026-11-25T16:04:15  password authentication failed for user "textstats"
+  18 2026-11-25T16:04:17  password authentication failed for user "textstats"
+   5 2026-11-25T16:04:18  password authentication failed for user "textstats"
+   9 2026-11-25T16:04:19  password authentication failed for user "textstats"
+  10 2026-11-25T16:04:20  password authentication failed for user "textstats"
+  14 2026-11-25T16:04:21  password authentication failed for user "textstats"
+   2 2026-11-25T16:06:08  password authentication failed for user "textstats"
+ 162 2026-11-25T16:06:55  password authentication failed for user "textstats"
+  68 2026-11-25T16:06:56  password authentication failed for user "textstats"
+   8 2026-11-25T16:06:57  password authentication failed for user "textstats"
+  68 2026-11-25T16:06:58  password authentication failed for user "textstats"
+  16 2026-11-25T16:06:59  password authentication failed for user "textstats"
+  31 2026-11-25T16:07:00  password authentication failed for user "textstats"
+  19 2026-11-25T16:07:01  password authentication failed for user "textstats"
+  28 2026-11-25T16:07:02  password authentication failed for user "textstats"
+   2 2026-11-25T16:09:46  password authentication failed for user "textstats"
+
+$ echo "baseline after the rotation, nothing changing:"; kubectl -n textstats wait pod/probe-baseline --for=jsonpath={.status.phase}=Succeeded --timeout=200s >/dev/null; kubectl -n textstats logs probe-baseline | tail -2
+baseline after the rotation, nothing changing:
+total=7646 failed=0 success_rate=100.00%
+outcomes: write-ok=7646
+
