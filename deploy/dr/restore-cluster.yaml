@@ -1,0 +1,27 @@
+# Point-in-time recovery: a new, separate PostgreSQL cluster rebuilt only from the object store
+# (base backup + archived WAL), replayed up to TARGET_LSN. It never touches the damaged cluster.
+# lab/q1-dr.sh fills in TARGET_LSN.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: textstats-db-restore
+  namespace: textstats
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18
+  storage:
+    size: 1Gi
+  bootstrap:
+    recovery:
+      source: origin
+      database: textstats
+      owner: textstats
+      recoveryTarget:
+        targetLSN: "TARGET_LSN"
+  externalClusters:
+    - name: origin
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: textstats-backups
+          serverName: textstats-db

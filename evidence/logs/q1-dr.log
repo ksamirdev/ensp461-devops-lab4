@@ -23,3 +23,199 @@ created bucket pg-backups
 $ kubectl -n backup exec deploy/seaweedfs -- sh -c 'echo s3.bucket.list | weed shell -master=localhost:9333' 2>&1 | grep pg-backups
   pg-backups	size:0	logical:0	chunk:0
 
+$ kubectl apply -f deploy/lab/traffic.yaml
+deployment.apps/traffic created
+
+$ kubectl -n textstats rollout status deploy/traffic --timeout=120s
+Waiting for deployment "traffic" rollout to finish: 0 of 2 updated replicas are available...
+Waiting for deployment "traffic" rollout to finish: 1 of 2 updated replicas are available...
+deployment "traffic" successfully rolled out
+
+$ kubectl -n textstats get cluster textstats-db -o wide
+NAME           AGE   INSTANCES   READY   STATUS                     PRIMARY
+textstats-db   19m   2           2       Cluster in healthy state   textstats-db-2
+
+$ kubectl -n textstats get pods -l cnpg.io/cluster=textstats-db -L role
+NAME             READY   STATUS    RESTARTS   AGE     ROLE
+textstats-db-1   2/2     Running   0          2m49s   replica
+textstats-db-2   2/2     Running   0          6m57s   primary
+
+$ sql $(primary) "SELECT application_name, state, sync_state, replay_lag FROM pg_stat_replication"
+textstats-db-1|streaming|async|00:00:00.001743
+
+$ sql $(primary) "SELECT archived_count, last_archived_wal, last_archived_time, failed_count FROM pg_stat_archiver"
+4|00000002000000000000000B|2026-11-25 15:32:23.570353+00|1
+
+$ kubectl -n textstats apply -f - <<'YAML'
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: textstats-db-before-drills
+spec:
+  cluster: {name: textstats-db}
+  method: plugin
+  pluginConfiguration: {name: barman-cloud.cloudnative-pg.io}
+YAML
+backup.postgresql.cnpg.io/textstats-db-before-drills created
+
+$ kubectl -n textstats wait backup/textstats-db-before-drills --for=jsonpath={.status.phase}=completed --timeout=300s
+backup.postgresql.cnpg.io/textstats-db-before-drills condition met
+
+$ kubectl -n textstats get backup -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,STARTED:.status.startedAt,STOPPED:.status.stoppedAt,BEGIN_WAL:.status.beginWal,END_WAL:.status.endWal
+NAME                                    PHASE       STARTED                STOPPED                BEGIN_WAL                  END_WAL
+textstats-db-before-drills              completed   2026-11-25T15:32:29Z   2026-11-25T15:32:32Z   00000002000000000000000A   00000002000000000000000C
+textstats-db-every-30m-20261125151253   completed   2026-11-25T15:25:25Z   2026-11-25T15:25:28Z   000000010000000000000004   000000010000000000000005
+textstats-db-every-30m-20261125153000   completed   2026-11-25T15:30:00Z   2026-11-25T15:30:09Z   00000002000000000000000A   00000002000000000000000A
+
+$ kubectl -n backup exec deploy/seaweedfs -- sh -c 'echo fs.du /buckets/pg-backups/textstats-db | weed shell -master=localhost:9333' 2>&1 | tail -3
+block:  27	logical size:  20810951	/buckets/pg-backups/textstats-db
+
+$ kubectl -n backup exec deploy/seaweedfs -- sh -c 'echo fs.ls /buckets/pg-backups/textstats-db/base | weed shell -master=localhost:9333' 2>&1 | tail -4
+20261125T152525
+20261125T152902
+20261125T153000
+20261125T153229
+
+$ echo "primary before: $(primary)"; sql $(primary) "SELECT count(*) FROM analyses"
+primary before: textstats-db-2
+10319
+
+$ kubectl -n textstats wait pod/probe-failover --for=condition=Ready --timeout=120s
+pod/probe-failover condition met
+
+$ echo "killing primary $OLD at $(date -u +%H:%M:%S)"; kubectl $NS delete pod $OLD --grace-period=0 --force 2>&1 | grep -v Warning
+killing primary textstats-db-2 at 15:32:50
+pod "textstats-db-2" force deleted from textstats namespace
+
+$ until [ "$(primary)" != "$OLD" ]; do sleep 0.5; done; echo "new primary $(primary) at $(date -u +%H:%M:%S)"
+new primary textstats-db-1 at 15:32:54
+
+$ until [ "$(kubectl -n textstats get cluster textstats-db -o jsonpath='{.status.readyInstances}')" = 2 ]; do sleep 2; done; echo "both instances ready again at $(date -u +%H:%M:%S); $OLD rejoined as a replica"
+both instances ready again at 15:33:09; textstats-db-2 rejoined as a replica
+
+$ kubectl -n textstats get cluster textstats-db -o jsonpath='{.status.currentPrimary} promoted, targetPrimaryTimestamp={.status.targetPrimaryTimestamp} currentPrimaryTimestamp={.status.currentPrimaryTimestamp}{"\n"}'
+textstats-db-1 promoted, targetPrimaryTimestamp=2026-11-25T15:32:51.363400Z currentPrimaryTimestamp=2026-11-25T15:32:54.758899Z
+
+$ kubectl -n textstats wait pod/probe-failover --for=jsonpath={.status.phase}=Succeeded --timeout=120s
+pod/probe-failover condition met
+
+$ kubectl -n textstats logs probe-failover
+second  outcomes
+     0  write-ok=134
+     1  write-ok=136
+     2  write-ok=134
+     3  write-ok=138
+     4  write-ok=138
+     5  write-ok=138
+     6  write-ok=138
+     7  write-ok=139
+     8  write-ok=134
+     9  write-ok=136
+    10  write-ok=136
+    11  write-ok=141
+    12  write-ok=140
+    13  write-ok=132
+    14  write-ok=119
+    15  error-TimeoutError=4  http-503=96  write-ok=28
+    17  error-TimeoutError=1
+    18  error-TimeoutError=3
+    20  error-TimeoutError=4
+    22  write-ok=125
+    23  write-ok=121
+    24  write-ok=126
+    25  write-ok=128
+    26  write-ok=133
+    27  write-ok=121
+    28  write-ok=140
+    29  write-ok=137
+    30  write-ok=132
+    31  write-ok=136
+    32  write-ok=138
+    33  write-ok=138
+    34  write-ok=137
+    35  write-ok=139
+    36  write-ok=133
+    37  write-ok=135
+    38  write-ok=137
+    39  write-ok=140
+    40  write-ok=136
+    41  write-ok=136
+    42  write-ok=140
+    43  write-ok=137
+    44  write-ok=136
+    45  write-ok=134
+    46  write-ok=139
+    47  write-ok=126
+    48  write-ok=133
+    49  write-ok=136
+    50  write-ok=108
+    51  write-ok=136
+    52  write-ok=138
+    53  write-ok=139
+    54  write-ok=132
+    55  write-ok=136
+    56  write-ok=140
+    57  write-ok=133
+    58  write-ok=136
+    59  write-ok=136
+
+total=7252 failed=108 success_rate=98.51%
+outcomes: error-TimeoutError=12, http-503=96, write-ok=7144
+first_failure_at=15.24s last_failure_at=20.03s failure_window=4.79s
+
+$ kubectl -n textstats get pods -l cnpg.io/cluster=textstats-db -L role
+NAME             READY   STATUS    RESTARTS   AGE   ROLE
+textstats-db-1   2/2     Running   0          4m    primary
+textstats-db-2   2/2     Running   0          45s   replica
+
+$ sql $(primary) "SELECT count(*) FROM analyses"
+18827
+
+$ sql $(primary) "SELECT count(*) AS rows, max(id) AS last_id, pg_current_wal_lsn() AS lsn, now() FROM analyses" | tee /tmp/q1-before-drop
+18829|18879|0/D201C18|2026-11-25 15:33:40.055045+00
+
+$ sql $(primary) "BEGIN; LOCK analyses; SELECT max(id) AS last_id_at_drop FROM analyses; DROP TABLE analyses; COMMIT" | grep -v -E "^(BEGIN|LOCK|DROP|COMMIT)"; echo "table dropped at $(date -u +%H:%M:%S)"
+18881
+table dropped at 15:33:40
+
+$ sql $(primary) "SELECT pg_switch_wal()"
+0/D20BD58
+
+$ sleep 8; kubectl -n textstats exec deploy/traffic -- curl -s -X POST -H 'Content-Type: application/json' -d '{"text":"after the drop"}' http://text-stats/stats; echo
+{"error":"database unavailable"}
+
+
+$ sql $(primary) "SELECT last_archived_wal, last_archived_time FROM pg_stat_archiver"
+00000003000000000000000D|2026-11-25 15:33:40.654506+00
+
+$ sed 's|TARGET_LSN|0/D201C18|' deploy/dr/restore-cluster.yaml | kubectl apply -f -
+cluster.postgresql.cnpg.io/textstats-db-restore created
+
+$ until [ "$(kubectl -n textstats get cluster textstats-db-restore -o jsonpath='{.status.phase}' 2>/dev/null)" = 'Cluster in healthy state' ]; do sleep 3; done; echo restore cluster healthy after $(($(date +%s) - 1795620828)) s
+restore cluster healthy after 64 s
+
+$ sql textstats-db-restore-1 "SELECT count(*) AS rows, max(id) AS last_id FROM analyses"
+18829|18879
+
+$ kubectl -n textstats exec textstats-db-restore-1 -c postgres -- pg_dump -U postgres -d textstats -t analyses | kubectl -n textstats exec -i $(primary) -c postgres -- psql -U postgres -d textstats -q && echo table restored into $(primary) after $(($(date +%s) - 1795620828)) s
+ set_config 
+------------
+ 
+(1 row)
+
+ setval 
+--------
+  18907
+(1 row)
+
+table restored into textstats-db-1 after 65 s
+
+$ sql $(primary) "ALTER TABLE analyses OWNER TO textstats"
+ALTER TABLE
+
+$ sleep 5; sql $(primary) "SELECT count(*) AS rows, max(id) AS last_id, count(*) FILTER (WHERE id > 18879) AS written_after_restore FROM analyses"
+18919|18997|90
+
+$ kubectl -n textstats delete cluster textstats-db-restore
+cluster.postgresql.cnpg.io "textstats-db-restore" deleted from textstats namespace
+
