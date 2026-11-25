@@ -21,9 +21,6 @@ spec:
         - name: app
           image: ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1
           env:
-            # Simulated defective release for the canary exercise: 30% of /stats requests fail
-            - name: FAULT_RATE
-              value: "0.3"
             - name: DATABASE_URL
               valueFrom: {secretKeyRef: {name: textstats-database-url, key: DATABASE_URL}}
           ports: [{containerPort: 5000}]
