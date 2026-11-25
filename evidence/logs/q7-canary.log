@@ -88,3 +88,91 @@ $ kubectl -n argocd get application textstats
 NAME        SYNC STATUS   HEALTH STATUS
 textstats   Synced        Healthy
 
+$ git log -1 --format='%h %ad %s' --date=format:%H:%M:%S origin/main
+604cf45 21:22:58 Release a defective build to test the canary rollback trigger
+
+$ git show --stat --format= origin/main -- deploy/gitops
+ deploy/gitops/app.yaml | 3 +++
+ 1 file changed, 3 insertions(+)
+
+$ until [ "$(kubectl -n argocd get application textstats -o jsonpath='{.status.sync.revision}')" = 604cf45e0eacb1fb8943ec471a98b4984a10d8c0 ]; do sleep 2; done; echo "Argo CD synced 604cf45 at $(date -u +%H:%M:%S) without a manual sync"
+Argo CD synced 604cf45 at 15:58:46 without a manual sync
+
+$ last=""; while :; do
+  s=$(kubectl -n textstats get rollout text-stats -o jsonpath="step={.status.currentStepIndex} phase={.status.phase} new_version_pods={.status.updatedReplicas} ready={.status.readyReplicas} {.status.message}")
+  [ "$s" != "$last" ] && echo "$(date -u +%H:%M:%S) $s" && last=$s
+  case "$s" in *"phase=Healthy"*|*"phase=Degraded"*) break;; esac
+  sleep 2; done
+15:58:46 step=0 phase=Progressing new_version_pods=1 ready=9 more replicas need to be updated
+15:58:50 step=1 phase=Paused new_version_pods=1 ready=10 CanaryPauseStep
+15:59:19 step=2 phase=Progressing new_version_pods=1 ready=10 more replicas need to be updated
+15:59:40 step=0 phase=Degraded new_version_pods= ready=9 RolloutAborted: Rollout aborted update to revision 3: Step-based analysis phase error/failed: Metric "error-rate" assessed Failed due to failed (2) > failureLimit (1)
+
+$ kubectl argo rollouts get rollout text-stats -n textstats --no-color
+Name:            text-stats
+Namespace:       textstats
+Status:          ✖ Degraded
+Message:         RolloutAborted: Rollout aborted update to revision 3: Step-based analysis phase error/failed: Metric "error-rate" assessed Failed due to failed (2) > failureLimit (1)
+Strategy:        Canary
+  Step:          0/10
+  SetWeight:     0
+  ActualWeight:  0
+Images:          ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1 (stable)
+Replicas:
+  Desired:       10
+  Current:       10
+  Updated:       0
+  Ready:         10
+  Available:     10
+
+NAME                                    KIND         STATUS        AGE    INFO
+⟳ text-stats                            Rollout      ✖ Degraded    46m    
+├──# revision:3                                                           
+│  ├──⧉ text-stats-65d8f59779           ReplicaSet   • ScaledDown  60s    canary
+│  └──α text-stats-65d8f59779-3-2       AnalysisRun  ✖ Failed      26s    ✔ 2,✖ 2
+├──# revision:2                                                           
+│  ├──⧉ text-stats-5488d754bf           ReplicaSet   ✔ Healthy     12m    stable
+│  │  ├──□ text-stats-5488d754bf-5krcd  Pod          ✔ Running     12m    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-j4hth  Pod          ✔ Running     11m    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-pxkfc  Pod          ✔ Running     11m    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-4prrs  Pod          ✔ Running     10m    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-ckc8m  Pod          ✔ Running     10m    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-d87h7  Pod          ✔ Running     10m    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-cbt2g  Pod          ✔ Running     9m24s  ready:1/1
+│  │  ├──□ text-stats-5488d754bf-hzpn7  Pod          ✔ Running     9m24s  ready:1/1
+│  │  ├──□ text-stats-5488d754bf-ww884  Pod          ✔ Running     9m24s  ready:1/1
+│  │  └──□ text-stats-5488d754bf-qtmg2  Pod          ✔ Running     6s     ready:1/1
+│  ├──α text-stats-5488d754bf-2-2       AnalysisRun  ✔ Successful  12m    ✔ 6
+│  ├──α text-stats-5488d754bf-2-5       AnalysisRun  ✔ Successful  11m    ✔ 6
+│  └──α text-stats-5488d754bf-2-8       AnalysisRun  ✔ Successful  10m    ✔ 6
+└──# revision:1                                                           
+   └──⧉ text-stats-847b8dd87b           ReplicaSet   • ScaledDown  46m    
+
+$ kubectl -n textstats get analysisrun --sort-by=.metadata.creationTimestamp
+NAME                        STATUS       AGE
+text-stats-5488d754bf-2-2   Successful   12m
+text-stats-5488d754bf-2-5   Successful   11m
+text-stats-5488d754bf-2-8   Successful   10m
+text-stats-65d8f59779-3-2   Failed       26s
+
+$ kubectl -n textstats get analysisrun --sort-by=.metadata.creationTimestamp -o json | jq -r '.items[-3:][] | .metadata.name as $n | .status.metricResults[] | "\($n)  \(.name)  phase=\(.phase)  values=\([.measurements[].value] | join(" "))"'
+text-stats-5488d754bf-2-5  error-rate  phase=Successful  values=[0] [0] [0]
+text-stats-5488d754bf-2-5  p95-latency-seconds  phase=Successful  values=[0.02444755954179067] [0.02438264477181877] [0.024319447318019112]
+text-stats-5488d754bf-2-8  error-rate  phase=Successful  values=[0] [0] [0]
+text-stats-5488d754bf-2-8  p95-latency-seconds  phase=Successful  values=[0.024357496137172283] [0.024377299800423993] [0.02429768649433789]
+text-stats-65d8f59779-3-2  error-rate  phase=Failed  values=[0.27109371624419737] [0.2664797914086711]
+text-stats-65d8f59779-3-2  p95-latency-seconds  phase=Successful  values=[0.02432676594750425] [0.024750141902407763]
+
+$ echo "requests/s per pod-template hash:"; prom "sum by (rollouts_pod_template_hash) (rate(textstats_http_requests_total{route=\"/stats\"}[1m]))"
+requests/s per pod-template hash:
+5488d754bf  14.908861505104527
+65d8f59779  1.2256944444444444
+
+$ echo "5xx share per pod-template hash:"; prom "sum by (rollouts_pod_template_hash) (rate(textstats_http_requests_total{route=\"/stats\",status=~\"5..\"}[2m])) / sum by (rollouts_pod_template_hash) (rate(textstats_http_requests_total{route=\"/stats\"}[2m]))"
+5xx share per pod-template hash:
+65d8f59779  0.26402266288951837
+
+$ kubectl -n argocd get application textstats
+NAME        SYNC STATUS   HEALTH STATUS
+textstats   Synced        Degraded
+
