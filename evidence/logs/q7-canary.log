@@ -1,0 +1,90 @@
+$ git log -1 --format='%h %ad %s' --date=format:%H:%M:%S origin/main
+604bf18 21:14:33 Release 4.0.1 to production through a canary
+
+$ git show --stat --format= origin/main -- deploy/gitops
+ deploy/gitops/app.yaml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+$ until [ "$(kubectl -n argocd get application textstats -o jsonpath='{.status.sync.revision}')" = 604bf18b5f236e83fdef21da196fc7880ea9e8a4 ]; do sleep 2; done; echo "Argo CD synced 604bf18 at $(date -u +%H:%M:%S) without a manual sync"
+Argo CD synced 604bf18 at 15:46:46 without a manual sync
+
+$ last=""; while :; do
+  s=$(kubectl -n textstats get rollout text-stats -o jsonpath="step={.status.currentStepIndex} phase={.status.phase} canary_weight={.status.canary.weights.canary.weight} ready={.status.readyReplicas} {.status.message}")
+  [ "$s" != "$last" ] && echo "$(date -u +%H:%M:%S) $s" && last=$s
+  case "$s" in *"phase=Healthy"*|*"phase=Degraded"*) break;; esac
+  sleep 2; done
+15:46:47 step=0 phase=Progressing canary_weight= ready=9 more replicas need to be updated
+15:46:51 step=1 phase=Paused canary_weight= ready=10 CanaryPauseStep
+15:47:20 step=2 phase=Progressing canary_weight= ready=10 more replicas need to be updated
+15:47:59 step=3 phase=Progressing canary_weight= ready=10 more replicas need to be updated
+15:48:01 step=4 phase=Paused canary_weight= ready=10 CanaryPauseStep
+15:48:30 step=5 phase=Progressing canary_weight= ready=10 more replicas need to be updated
+15:49:11 step=6 phase=Progressing canary_weight= ready=8 more replicas need to be updated
+15:49:13 step=7 phase=Paused canary_weight= ready=10 CanaryPauseStep
+15:49:42 step=8 phase=Progressing canary_weight= ready=10 more replicas need to be updated
+15:50:21 step=9 phase=Progressing canary_weight= ready=8 updated replicas are still becoming available
+15:50:25 step=10 phase=Healthy canary_weight= ready=10 
+
+$ kubectl argo rollouts get rollout text-stats -n textstats --no-color
+Name:            text-stats
+Namespace:       textstats
+Status:          ✔ Healthy
+Strategy:        Canary
+  Step:          10/10
+  SetWeight:     100
+  ActualWeight:  100
+Images:          ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1 (stable)
+Replicas:
+  Desired:       10
+  Current:       10
+  Updated:       10
+  Ready:         10
+  Available:     10
+
+NAME                                    KIND         STATUS        AGE    INFO
+⟳ text-stats                            Rollout      ✔ Healthy     37m    
+├──# revision:2                                                           
+│  ├──⧉ text-stats-5488d754bf           ReplicaSet   ✔ Healthy     3m41s  stable
+│  │  ├──□ text-stats-5488d754bf-5krcd  Pod          ✔ Running     3m41s  ready:1/1
+│  │  ├──□ text-stats-5488d754bf-j4hth  Pod          ✔ Running     2m28s  ready:1/1
+│  │  ├──□ text-stats-5488d754bf-pxkfc  Pod          ✔ Running     2m28s  ready:1/1
+│  │  ├──□ text-stats-5488d754bf-4prrs  Pod          ✔ Running     77s    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-ckc8m  Pod          ✔ Running     77s    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-d87h7  Pod          ✔ Running     77s    ready:1/1
+│  │  ├──□ text-stats-5488d754bf-2xhs8  Pod          ✔ Running     6s     ready:1/1
+│  │  ├──□ text-stats-5488d754bf-cbt2g  Pod          ✔ Running     6s     ready:1/1
+│  │  ├──□ text-stats-5488d754bf-hzpn7  Pod          ✔ Running     6s     ready:1/1
+│  │  └──□ text-stats-5488d754bf-ww884  Pod          ✔ Running     6s     ready:1/1
+│  ├──α text-stats-5488d754bf-2-2       AnalysisRun  ✔ Successful  3m8s   ✔ 6
+│  ├──α text-stats-5488d754bf-2-5       AnalysisRun  ✔ Successful  117s   ✔ 6
+│  └──α text-stats-5488d754bf-2-8       AnalysisRun  ✔ Successful  46s    ✔ 6
+└──# revision:1                                                           
+   └──⧉ text-stats-847b8dd87b           ReplicaSet   • ScaledDown  37m    
+
+$ kubectl -n textstats get analysisrun --sort-by=.metadata.creationTimestamp
+NAME                        STATUS       AGE
+text-stats-5488d754bf-2-2   Successful   3m8s
+text-stats-5488d754bf-2-5   Successful   117s
+text-stats-5488d754bf-2-8   Successful   46s
+
+$ kubectl -n textstats get analysisrun --sort-by=.metadata.creationTimestamp -o json | jq -r '.items[-3:][] | .metadata.name as $n | .status.metricResults[] | "\($n)  \(.name)  phase=\(.phase)  values=\([.measurements[].value] | join(" "))"'
+text-stats-5488d754bf-2-2  p95-latency-seconds  phase=Successful  values=[0.03937499999999994] [0.02490625] [0.024612500000000002]
+text-stats-5488d754bf-2-2  error-rate  phase=Successful  values=[0] [0] [0]
+text-stats-5488d754bf-2-5  error-rate  phase=Successful  values=[0] [0] [0]
+text-stats-5488d754bf-2-5  p95-latency-seconds  phase=Successful  values=[0.02444755954179067] [0.02438264477181877] [0.024319447318019112]
+text-stats-5488d754bf-2-8  error-rate  phase=Successful  values=[0] [0] [0]
+text-stats-5488d754bf-2-8  p95-latency-seconds  phase=Successful  values=[0.024357496137172283] [0.024377299800423993] [0.02429768649433789]
+
+$ echo "requests/s per pod-template hash:"; prom "sum by (rollouts_pod_template_hash) (rate(textstats_http_requests_total{route=\"/stats\"}[1m]))"
+requests/s per pod-template hash:
+847b8dd87b  6.752947845220278
+5488d754bf  8.654621822347334
+
+$ echo "5xx share per pod-template hash:"; prom "sum by (rollouts_pod_template_hash) (rate(textstats_http_requests_total{route=\"/stats\",status=~\"5..\"}[2m])) / sum by (rollouts_pod_template_hash) (rate(textstats_http_requests_total{route=\"/stats\"}[2m]))"
+5xx share per pod-template hash:
+847b8dd87b  0
+
+$ kubectl -n argocd get application textstats
+NAME        SYNC STATUS   HEALTH STATUS
+textstats   Synced        Healthy
+
