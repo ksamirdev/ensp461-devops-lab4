@@ -1,0 +1,162 @@
+$ kubectl create namespace bluegreen --dry-run=client -o yaml | kubectl apply -f -
+namespace/bluegreen created
+
+$ kubectl apply -f deploy/bluegreen/blue.yaml -f deploy/bluegreen/services.yaml
+deployment.apps/text-stats-blue created
+service/text-stats created
+service/text-stats-preview created
+
+$ kubectl -n bluegreen rollout status deploy/text-stats-blue --timeout=180s
+Waiting for deployment "text-stats-blue" rollout to finish: 0 of 3 updated replicas are available...
+Waiting for deployment "text-stats-blue" rollout to finish: 1 of 3 updated replicas are available...
+Waiting for deployment "text-stats-blue" rollout to finish: 2 of 3 updated replicas are available...
+deployment "text-stats-blue" successfully rolled out
+
+$ kubectl -n bluegreen exec client -- curl -s http://text-stats/
+{"color":"blue","pod":"text-stats-blue-759f6d8558-7l82p","release":"4.0.0","service":"text-stats"}
+
+$ kubectl apply -f deploy/bluegreen/green.yaml
+deployment.apps/text-stats-green created
+
+$ kubectl -n bluegreen rollout status deploy/text-stats-green --timeout=180s
+Waiting for deployment "text-stats-green" rollout to finish: 0 of 3 updated replicas are available...
+Waiting for deployment "text-stats-green" rollout to finish: 1 of 3 updated replicas are available...
+Waiting for deployment "text-stats-green" rollout to finish: 2 of 3 updated replicas are available...
+deployment "text-stats-green" successfully rolled out
+
+$ kubectl -n bluegreen get pods -L color -o wide
+NAME                                READY   STATUS    RESTARTS   AGE   IP                NODE       NOMINATED NODE   READINESS GATES   COLOR
+client                              1/1     Running   0          7s    192.168.194.103   orbstack   <none>           <none>            
+text-stats-blue-759f6d8558-5m42w    1/1     Running   0          8s    192.168.194.101   orbstack   <none>           <none>            blue
+text-stats-blue-759f6d8558-7l82p    1/1     Running   0          8s    192.168.194.102   orbstack   <none>           <none>            blue
+text-stats-blue-759f6d8558-rmb9r    1/1     Running   0          8s    192.168.194.104   orbstack   <none>           <none>            blue
+text-stats-green-58645ffb85-5fc8n   1/1     Running   0          3s    192.168.194.106   orbstack   <none>           <none>            green
+text-stats-green-58645ffb85-g87x6   1/1     Running   0          3s    192.168.194.107   orbstack   <none>           <none>            green
+text-stats-green-58645ffb85-lcrgr   1/1     Running   0          3s    192.168.194.105   orbstack   <none>           <none>            green
+
+$ kubectl -n bluegreen exec client -- curl -s --retry 5 --retry-connrefused http://text-stats-preview/
+{"color":"green","pod":"text-stats-green-58645ffb85-g87x6","release":"4.0.1","service":"text-stats"}
+
+$ kubectl -n bluegreen exec client -- curl -s -X POST -H 'Content-Type: application/json' -d '{"text":"green preview check"}' http://text-stats-preview/stats
+{"characters":19,"unique_words":3,"words":3}
+
+$ kubectl -n bluegreen exec client -- curl -s http://text-stats/
+{"color":"blue","pod":"text-stats-blue-759f6d8558-rmb9r","release":"4.0.0","service":"text-stats"}
+
+$ kubectl -n bluegreen get endpointslices -L kubernetes.io/service-name
+NAME                       ADDRESSTYPE   PORTS   ENDPOINTS                                         AGE   SERVICE-NAME
+text-stats-9qwjk           IPv4          5000    192.168.194.101,192.168.194.102,192.168.194.104   12s   text-stats
+text-stats-preview-2gw7t   IPv4          5000    192.168.194.107,192.168.194.105,192.168.194.106   12s   text-stats-preview
+
+$ switch green; echo "switched to green at $(date -u +%H:%M:%S)"
+service/text-stats patched
+switched to green at 15:41:39
+
+$ kubectl -n bluegreen wait pod/probe-switch --for=jsonpath={.status.phase}=Succeeded --timeout=120s
+pod/probe-switch condition met
+
+$ kubectl -n bluegreen logs probe-switch
+second  outcomes
+     0  blue=324
+     1  blue=340
+     2  blue=341
+     3  blue=331
+     4  blue=316
+     5  blue=339
+     6  blue=333
+     7  blue=333
+     8  blue=344
+     9  blue=341
+    10  blue=336
+    11  blue=338
+    12  blue=344
+    13  blue=341
+    14  blue=344
+    15  blue=329
+    16  blue=337
+    17  blue=334
+    18  blue=302
+    19  blue=329
+    20  blue=32  green=315
+    21  green=325
+    22  green=301
+    23  green=340
+    24  green=316
+    25  green=343
+    26  green=314
+    27  green=275
+    28  green=353
+    29  green=341
+    30  green=347
+    31  green=337
+    32  green=346
+    33  green=325
+    34  green=334
+    35  green=342
+    36  green=322
+    37  green=329
+    38  green=348
+    39  green=340
+
+total=13301 failed=0 success_rate=100.00%
+outcomes: blue=6708, green=6593
+
+$ switch blue; echo "rolled back to blue at $(date -u +%H:%M:%S)"
+service/text-stats patched
+rolled back to blue at 15:42:18
+
+$ kubectl -n bluegreen wait pod/probe-rollback --for=jsonpath={.status.phase}=Succeeded --timeout=120s
+pod/probe-rollback condition met
+
+$ kubectl -n bluegreen logs probe-rollback
+second  outcomes
+     0  green=323
+     1  green=334
+     2  green=325
+     3  green=332
+     4  green=305
+     5  green=252
+     6  green=307
+     7  green=310
+     8  green=326
+     9  green=323
+    10  green=292
+    11  green=327
+    12  green=321
+    13  green=339
+    14  green=324
+    15  blue=223  green=24
+    16  blue=325
+    17  blue=215
+    18  blue=315
+    19  blue=337
+    20  blue=319
+    21  blue=335
+    22  blue=308
+    23  blue=336
+    24  blue=342
+    25  blue=332
+    26  blue=301
+    27  blue=318
+    28  blue=346
+    29  blue=345
+
+total=9461 failed=0 success_rate=100.00%
+outcomes: blue=4697, green=4764
+
+$ switch green && kubectl $NS scale deploy/text-stats-blue --replicas=0
+service/text-stats patched
+deployment.apps/text-stats-blue scaled
+
+$ kubectl -n bluegreen get deploy,svc -o wide
+NAME                               READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                                        SELECTOR
+deployment.apps/text-stats-blue    0/0     0            0           90s   app          ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.0   app=text-stats,color=blue
+deployment.apps/text-stats-green   3/3     3            3           85s   app          ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1   app=text-stats,color=green
+
+NAME                         TYPE        CLUSTER-IP        EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service/text-stats           ClusterIP   192.168.194.183   <none>        80/TCP    90s   app=text-stats,color=green
+service/text-stats-preview   ClusterIP   192.168.194.251   <none>        80/TCP    90s   app=text-stats,color=green
+
+$ kubectl -n bluegreen exec client -- curl -s http://text-stats/
+{"color":"green","pod":"text-stats-green-58645ffb85-lcrgr","release":"4.0.1","service":"text-stats"}
+

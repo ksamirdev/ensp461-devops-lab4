@@ -1,0 +1,19 @@
+# "text-stats" is what users call. Its selector names one colour; switching that one label moves all
+# traffic at once. "text-stats-preview" always points at the idle colour so it can be tested first.
+apiVersion: v1
+kind: Service
+metadata:
+  name: text-stats
+  namespace: bluegreen
+spec:
+  selector: {app: text-stats, color: blue}
+  ports: [{port: 80, targetPort: 5000}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: text-stats-preview
+  namespace: bluegreen
+spec:
+  selector: {app: text-stats, color: green}
+  ports: [{port: 80, targetPort: 5000}]

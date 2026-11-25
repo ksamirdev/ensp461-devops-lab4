@@ -1,0 +1,25 @@
+# The green environment: a complete, independent copy of the app running release 4.0.1.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: text-stats-green
+  namespace: bluegreen
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: text-stats, color: green}
+  template:
+    metadata:
+      labels: {app: text-stats, color: green}
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1
+          env:
+            - {name: COLOR, value: green}
+          ports: [{containerPort: 5000}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: 5000}
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
