@@ -53,3 +53,40 @@ text-stats-847b8dd87b-zwsfc   1/1     Running   0          12m   192.168.194.58 
 textstats-db-1                2/2     Running   0          57s   192.168.194.69   orbstack   <none>           <none>
 textstats-db-2                2/2     Running   0          12s   192.168.194.73   orbstack   <none>           <none>
 
+$ kubectl -n argocd get application textstats -o jsonpath='{.spec.syncPolicy}{"\n"}'
+{"automated":{"prune":true,"selfHeal":true},"retry":{"backoff":{"duration":"10s","factor":2,"maxDuration":"3m"},"limit":5},"syncOptions":["CreateNamespace=true"]}
+
+$ kubectl -n textstats get rollout text-stats
+NAME         DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+text-stats   10        10        10           10          30m
+
+$ kubectl -n textstats scale rollout text-stats --replicas=3; echo "scaled by hand at $(date -u +%H:%M:%S)"
+rollout.argoproj.io/text-stats scaled
+scaled by hand at 15:42:57
+
+$ for i in $(seq 1 30); do r=$(kubectl -n textstats get rollout text-stats -o jsonpath={.spec.replicas}); echo "$(date -u +%H:%M:%S) spec.replicas=$r app=$(status)"; [ "$r" = 10 ] && [ $i -gt 1 ] && break; sleep 1; done
+15:42:57 spec.replicas=3 app=Synced/Healthy
+15:42:59 spec.replicas=3 app=OutOfSync/Healthy
+15:43:00 spec.replicas=10 app=Synced/Progressing
+
+$ kubectl -n textstats delete service text-stats; echo "deleted at $(date -u +%H:%M:%S)"
+service "text-stats" deleted from textstats namespace
+deleted at 15:43:00
+
+$ until kubectl -n textstats get service text-stats >/dev/null 2>&1; do sleep 1; done; echo "recreated at $(date -u +%H:%M:%S)"; kubectl -n textstats get service text-stats
+recreated at 15:43:04
+NAME         TYPE        CLUSTER-IP        EXTERNAL-IP   PORT(S)   AGE
+text-stats   ClusterIP   192.168.194.190   <none>        80/TCP    1s
+
+$ kubectl -n argocd get application textstats -o jsonpath='{range .status.history[*]}{.id}  {.revision}  {.deployedAt}{"\n"}{end}'
+0  ea8cfeaaecc9ef81f383af2a518baa401553f435  2026-11-25T15:12:53Z
+1  fad0ea609fd604f874e1cb2c54a38f0aac2caa3a  2026-11-25T15:43:01Z
+
+$ kubectl -n argocd logs statefulset/argocd-application-controller --since=10m | jq -r 'select(.reason and (.msg | test("sync"))) | .time + "  " + .msg' | tail -6
+2026-11-25T15:42:58Z  Updated sync status: Synced -> OutOfSync
+2026-11-25T15:42:59Z  Updated sync status: OutOfSync -> Synced
+2026-11-25T15:43:00Z  Updated sync status: Synced -> OutOfSync
+2026-11-25T15:43:02Z  Initiated automated sync to 'fad0ea609fd604f874e1cb2c54a38f0aac2caa3a'
+2026-11-25T15:43:03Z  Partial sync operation to fad0ea609fd604f874e1cb2c54a38f0aac2caa3a succeeded
+2026-11-25T15:43:03Z  Updated sync status: OutOfSync -> Synced
+

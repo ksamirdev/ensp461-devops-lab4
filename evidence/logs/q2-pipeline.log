@@ -69,3 +69,24 @@ ERROR    textstats:web.py:141 database write failed: type "analyses" already exi
 FAILED tests/integration/test_database.py::test_concurrent_first_writes_create_the_schema_once - assert [503, 200, 20...200, 200, ...] == [200, 200, 20...200, 200, ...]
 ========================= 1 failed, 4 passed in 0.69s ==========================
 
+$ gh run view 45647118437 --repo ksamirdev/ensp461-devops-lab4
+
+✓ main pipeline · 45647118437
+Triggered via push about 3 minutes ago
+
+JOBS
+✓ unit-tests in 12s (ID 139320966205)
+✓ secret-scan in 8s (ID 139320966792)
+✓ integration-tests in 25s (ID 139321145312)
+✓ build in 24s (ID 139321507734)
+✓ deploy-staging in 1m11s (ID 139321847337)
+✓ publish in 22s (ID 139322686895)
+
+ARTIFACTS
+image
+integration-test-results
+unit-test-results
+
+For more information about a job, try: gh run view --job=<job-id>
+View this run on GitHub: https://github.com/ksamirdev/ensp461-devops-lab4/actions/runs/45647118437
+
