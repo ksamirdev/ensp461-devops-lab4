@@ -1,0 +1,55 @@
+$ git log --oneline -1 origin/main
+ea8cfea Add GitOps manifests for text-stats and the Argo CD application
+
+$ kubectl get namespace textstats || true
+Error from server (NotFound): namespaces "textstats" not found
+
+$ kubectl apply -f deploy/argocd/textstats.yaml
+application.argoproj.io/textstats created
+
+$ until [ "$(kubectl -n argocd get application textstats -o jsonpath='{.status.sync.status} {.status.health.status}')" = 'Synced Healthy' ]; do sleep 5; done; echo synced and healthy after $SECONDS s
+synced and healthy after 774 s
+
+$ kubectl -n argocd get application textstats -o wide
+NAME        SYNC STATUS   HEALTH STATUS   REVISION                                   PROJECT
+textstats   Synced        Healthy         ea8cfeaaecc9ef81f383af2a518baa401553f435   default
+
+$ kubectl -n textstats get cluster,objectstore,scheduledbackup,externalsecret,rollout,svc
+NAME                                      AGE   INSTANCES   READY   STATUS                     PRIMARY
+cluster.postgresql.cnpg.io/textstats-db   12m   2           2       Cluster in healthy state   textstats-db-1
+
+NAME                                                AGE
+objectstore.barmancloud.cnpg.io/textstats-backups   12m
+
+NAME                                                        AGE   CLUSTER        LAST BACKUP
+scheduledbackup.postgresql.cnpg.io/textstats-db-every-30m   12m   textstats-db   12m
+
+NAME                                                          STORETYPE     STORE   REFRESH INTERVAL   STATUS         READY   LAST SYNC
+externalsecret.external-secrets.io/textstats-backup-s3        SecretStore   vault   1m                 SecretSynced   True    46s
+externalsecret.external-secrets.io/textstats-database-url     SecretStore   vault   1m                 SecretSynced   True    46s
+externalsecret.external-secrets.io/textstats-db-credentials   SecretStore   vault   1m                 SecretSynced   True    49s
+
+NAME                             DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
+rollout.argoproj.io/text-stats   10        10        10           10          12m
+
+NAME                      TYPE        CLUSTER-IP        EXTERNAL-IP   PORT(S)    AGE
+service/text-stats        ClusterIP   192.168.194.242   <none>        80/TCP     12m
+service/textstats-db-r    ClusterIP   192.168.194.198   <none>        5432/TCP   12m
+service/textstats-db-ro   ClusterIP   192.168.194.153   <none>        5432/TCP   12m
+service/textstats-db-rw   ClusterIP   192.168.194.248   <none>        5432/TCP   12m
+
+$ kubectl -n textstats get pods -o wide
+NAME                          READY   STATUS    RESTARTS   AGE   IP               NODE       NOMINATED NODE   READINESS GATES
+text-stats-847b8dd87b-5hqf2   1/1     Running   0          12m   192.168.194.62   orbstack   <none>           <none>
+text-stats-847b8dd87b-6dqcw   1/1     Running   0          12m   192.168.194.56   orbstack   <none>           <none>
+text-stats-847b8dd87b-8t45l   1/1     Running   0          12m   192.168.194.63   orbstack   <none>           <none>
+text-stats-847b8dd87b-9qs2p   1/1     Running   0          12m   192.168.194.57   orbstack   <none>           <none>
+text-stats-847b8dd87b-mmq8k   1/1     Running   0          12m   192.168.194.59   orbstack   <none>           <none>
+text-stats-847b8dd87b-ncvwj   1/1     Running   0          12m   192.168.194.60   orbstack   <none>           <none>
+text-stats-847b8dd87b-ptgml   1/1     Running   0          12m   192.168.194.64   orbstack   <none>           <none>
+text-stats-847b8dd87b-thpss   1/1     Running   0          12m   192.168.194.65   orbstack   <none>           <none>
+text-stats-847b8dd87b-xnrvr   1/1     Running   0          12m   192.168.194.61   orbstack   <none>           <none>
+text-stats-847b8dd87b-zwsfc   1/1     Running   0          12m   192.168.194.58   orbstack   <none>           <none>
+textstats-db-1                2/2     Running   0          57s   192.168.194.69   orbstack   <none>           <none>
+textstats-db-2                2/2     Running   0          12s   192.168.194.73   orbstack   <none>           <none>
+
