@@ -1,0 +1,65 @@
+# Throwaway staging environment the pipeline creates in a kind cluster before it publishes an image.
+# The database password comes from the Secret "staging-db", which the pipeline generates at run time.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: mirror.gcr.io/library/postgres:18
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: staging-db, key: password}}
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, postgres]}
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: text-stats
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: text-stats}
+  template:
+    metadata:
+      labels: {app: text-stats}
+    spec:
+      containers:
+        - name: app
+          image: text-stats:ci
+          imagePullPolicy: Never
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: staging-db, key: url}}
+          ports: [{containerPort: 5000}]
+          readinessProbe:
+            httpGet: {path: /readyz, port: 5000}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: 5000}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: text-stats
+spec:
+  selector: {app: text-stats}
+  ports: [{port: 80, targetPort: 5000}]

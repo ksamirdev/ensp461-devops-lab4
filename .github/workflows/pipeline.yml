@@ -1,0 +1,145 @@
+name: pipeline
+
+# Every stage is a gate: a job only starts when the jobs it needs have passed,
+# so a failing test, leaked secret or broken staging deploy stops the image from being published.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["evidence/**", "reports/**", "deploy/gitops/**", "**.md"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# All jobs use arm64 runners: the lab cluster (OrbStack on Apple silicon) is arm64 and runs the published image as is.
+jobs:
+  secret-scan:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: gitleaks (whole git history)
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --redact --verbose
+
+  unit-tests:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/unit -v --junitxml=test-results-unit.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: unit-test-results
+          path: test-results-unit.xml
+
+  integration-tests:
+    needs: [unit-tests]
+    runs-on: ubuntu-24.04-arm
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:18
+        env:
+          POSTGRES_PASSWORD: ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 15
+    env:
+      # Disposable database inside this job only; not a real credential
+      DATABASE_URL: postgresql://postgres:ci-only@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/integration -v --junitxml=test-results-integration.xml
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: integration-test-results
+          path: test-results-integration.xml
+
+  build:
+    needs: [integration-tests, secret-scan]
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        run: echo "release=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+      - run: docker build --build-arg RELEASE=${{ steps.version.outputs.release }} -t text-stats:ci .
+      - run: docker save text-stats:ci -o image.tar
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image
+          path: image.tar
+          retention-days: 1
+
+  deploy-staging:
+    needs: [build]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: image
+      - uses: helm/kind-action@v1.15.2
+        with:
+          cluster_name: staging
+      - run: kind load image-archive image.tar --name staging
+      - name: Create the staging database secret (generated, never stored)
+        run: |
+          pw=$(openssl rand -hex 16)
+          echo "::add-mask::$pw"
+          kubectl create secret generic staging-db \
+            --from-literal=password="$pw" \
+            --from-literal=url="postgresql://postgres:$pw@postgres:5432/postgres"
+      - run: kubectl apply -f deploy/staging/staging.yaml
+      - run: kubectl rollout status deploy/postgres --timeout=180s && kubectl rollout status deploy/text-stats --timeout=180s
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-dev.txt
+      - name: Smoke tests against the deployed service
+        run: |
+          kubectl port-forward svc/text-stats 8080:80 >/dev/null &
+          sleep 3
+          BASE_URL=http://localhost:8080 EXPECTED_RELEASE=${{ needs.build.outputs.release }} \
+            pytest tests/smoke -v
+      - if: failure()
+        run: kubectl get pods -o wide; kubectl logs deploy/text-stats --tail=50
+
+  publish:
+    needs: [build, deploy-staging]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: image
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Short-lived token GitHub issues for this run; no stored registry password
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the image that passed every gate
+        run: |
+          docker load -i image.tar
+          repo=ghcr.io/${GITHUB_REPOSITORY,,}
+          for tag in ${{ needs.build.outputs.release }} sha-${GITHUB_SHA::7}; do
+            docker tag text-stats:ci "$repo:$tag"
+            docker push "$repo:$tag"
+          done
