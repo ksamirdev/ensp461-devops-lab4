@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+.venv/
+test-results*.xml
+# Vault unseal key and root token: local only, never committed
+.vault-init.json
+*.local.env
