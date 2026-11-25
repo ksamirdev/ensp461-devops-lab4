@@ -1,0 +1,22 @@
+# Prometheus server only. Its default "kubernetes-pods" job scrapes pods annotated prometheus.io/scrape
+# and copies every pod label onto the series, so canary and stable pods are told apart by
+# rollouts_pod_template_hash.
+alertmanager:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+server:
+  global:
+    scrape_interval: 5s
+    scrape_timeout: 4s
+    evaluation_interval: 5s
+  retention: 2d
+  persistentVolume:
+    size: 2Gi
+  # Docker Hub copy of the same release: quay.io was timing out from the lab network
+  image:
+    repository: prom/prometheus

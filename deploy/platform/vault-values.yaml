@@ -1,0 +1,16 @@
+# Single Vault server with file storage: sealed on every restart and unsealed by an operator (lab/q6-vault.sh).
+# Not dev mode: dev mode keeps everything in memory, starts unsealed and hands out a root token.
+injector:
+  enabled: false
+server:
+  standalone:
+    enabled: true
+  dataStorage:
+    size: 1Gi
+  auditStorage:
+    enabled: true
+    size: 1Gi
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+ui:
+  enabled: true

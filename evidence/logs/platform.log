@@ -1,0 +1,135 @@
+$ kubectl config current-context
+orbstack
+
+$ kubectl get nodes -o wide
+NAME       STATUS   ROLES                  AGE    VERSION        INTERNAL-IP     EXTERNAL-IP   OS-IMAGE   KERNEL-VERSION                                CONTAINER-RUNTIME
+orbstack   Ready    control-plane,master   207d   v1.36.5+orb1   192.168.139.2   <none>        OrbStack   7.2.12-orbstack-00394-gbecdd6130068 (arm64)   docker://29.8.2
+
+$ kubectl apply --server-side -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.3/cert-manager.yaml >/dev/null && echo cert-manager v1.21.3 applied
+cert-manager v1.21.3 applied
+
+$ kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
+deployment "cert-manager-webhook" successfully rolled out
+
+$ kubectl apply --server-side -f https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.30/releases/cnpg-1.30.2.yaml >/dev/null && echo cloudnative-pg 1.30.2 applied
+cloudnative-pg 1.30.2 applied
+
+$ kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=300s
+deployment "cnpg-controller-manager" successfully rolled out
+
+$ kubectl apply -f https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.16.0/manifest.yaml >/dev/null && echo barman-cloud plugin v0.16.0 applied
+barman-cloud plugin v0.16.0 applied
+
+$ kubectl -n cnpg-system rollout status deploy/barman-cloud --timeout=300s
+deployment "barman-cloud" successfully rolled out
+
+$ kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+namespace/argocd unchanged
+
+$ kubectl -n argocd apply --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.3/manifests/install.yaml >/dev/null && echo argo-cd v3.6.3 applied
+argo-cd v3.6.3 applied
+
+$ kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
+namespace/argo-rollouts unchanged
+
+$ kubectl -n argo-rollouts apply --server-side -f https://github.com/argoproj/argo-rollouts/releases/download/v1.10.2/install.yaml >/dev/null && echo argo-rollouts v1.10.2 applied
+argo-rollouts v1.10.2 applied
+
+$ helm upgrade --install external-secrets external-secrets/external-secrets --version 2.15.0 -n external-secrets --create-namespace --wait
+Release "external-secrets" has been upgraded. Happy Helming!
+NAME: external-secrets
+LAST DEPLOYED: Wed Nov 25 20:35:59 2026
+NAMESPACE: external-secrets
+STATUS: deployed
+REVISION: 3
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+NOTES:
+external-secrets has been deployed successfully in namespace external-secrets!
+
+In order to begin using ExternalSecrets, you will need to set up a SecretStore
+or ClusterSecretStore resource (for example, by creating a 'vault' SecretStore).
+
+More information on the different types of SecretStores and how to configure them
+can be found in our Github: https://github.com/external-secrets/external-secrets
+
+$ helm upgrade --install prometheus prometheus-community/prometheus --version 30.0.1 -n monitoring --create-namespace -f deploy/platform/prometheus-values.yaml --wait
+Release "prometheus" has been upgraded. Happy Helming!
+NAME: prometheus
+LAST DEPLOYED: Wed Nov 25 20:36:01 2026
+NAMESPACE: monitoring
+STATUS: deployed
+REVISION: 3
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+NOTES:
+The Prometheus server can be accessed via port 80 on the following DNS name from within your cluster:
+prometheus-server.monitoring.svc.cluster.local
+
+
+Get the Prometheus server URL by running these commands in the same shell:
+  export POD_NAME=$(kubectl get pods --namespace monitoring -l "app.kubernetes.io/name=prometheus,app.kubernetes.io/instance=prometheus" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace monitoring port-forward $POD_NAME 9090
+
+
+
+
+
+For more information on running Prometheus, visit:
+https://prometheus.io/
+
+$ helm upgrade --install vault hashicorp/vault --version 0.34.1 -n vault --create-namespace -f deploy/platform/vault-values.yaml
+Release "vault" does not exist. Installing it now.
+NAME: vault
+LAST DEPLOYED: Wed Nov 25 20:36:59 2026
+NAMESPACE: vault
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+NOTES:
+Thank you for installing HashiCorp Vault!
+
+Now that you have deployed Vault, you should look over the docs on using
+Vault with Kubernetes available here:
+
+https://developer.hashicorp.com/vault/docs
+
+
+Your release is named vault. To learn more about the release, try:
+
+  $ helm status vault
+  $ helm get manifest vault
+
+$ kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
+deployment "argocd-server" successfully rolled out
+
+$ kubectl -n argo-rollouts rollout status deploy/argo-rollouts --timeout=300s
+deployment "argo-rollouts" successfully rolled out
+
+$ kubectl get pods -A -o wide --sort-by=.metadata.namespace
+NAMESPACE          NAME                                                         READY   STATUS              RESTARTS       AGE     IP               NODE       NOMINATED NODE   READINESS GATES
+argo-rollouts      argo-rollouts-569f8dd7f4-67p4t                               1/1     Running             0              17m     192.168.194.44   orbstack   <none>           <none>
+argocd             argocd-application-controller-0                              1/1     Running             0              17m     192.168.194.42   orbstack   <none>           <none>
+argocd             argocd-applicationset-controller-6797fcf7cd-8rhqm            1/1     Running             0              17m     192.168.194.38   orbstack   <none>           <none>
+argocd             argocd-dex-server-7b55757689-8f8p8                           1/1     Running             0              17m     192.168.194.37   orbstack   <none>           <none>
+argocd             argocd-notifications-controller-8f9db4548-vp6fr              1/1     Running             0              17m     192.168.194.39   orbstack   <none>           <none>
+argocd             argocd-redis-9cc9db495-8vpgv                                 1/1     Running             0              17m     192.168.194.40   orbstack   <none>           <none>
+argocd             argocd-repo-server-7597984f5d-545lc                          1/1     Running             0              17m     192.168.194.41   orbstack   <none>           <none>
+argocd             argocd-server-bd9cf57b4-cdk9b                                1/1     Running             0              17m     192.168.194.43   orbstack   <none>           <none>
+cert-manager       cert-manager-6947b5dc58-rj8tl                                1/1     Running             0              18m     192.168.194.34   orbstack   <none>           <none>
+cert-manager       cert-manager-cainjector-b5bdf695c-jpm86                      1/1     Running             0              18m     192.168.194.33   orbstack   <none>           <none>
+cert-manager       cert-manager-webhook-5bc96844fb-lhhhg                        1/1     Running             0              18m     192.168.194.32   orbstack   <none>           <none>
+cnpg-system        barman-cloud-df44454cb-xnpv2                                 1/1     Running             0              17m     192.168.194.36   orbstack   <none>           <none>
+cnpg-system        cnpg-controller-manager-864ff694-tt7vx                       1/1     Running             0              17m     192.168.194.35   orbstack   <none>           <none>
+default            api-gateway-6db77bc57b-kvsvc                                 0/1     ImagePullBackOff    1              166d    192.168.194.31   orbstack   <none>           <none>
+default            web-549f5dcf4b-gmm57                                         0/1     ImagePullBackOff    1              166d    192.168.194.27   orbstack   <none>           <none>
+external-secrets   external-secrets-8667c988b4-kxrbf                            1/1     Running             0              15m     192.168.194.46   orbstack   <none>           <none>
+external-secrets   external-secrets-cert-controller-5f55cfd8b8-wrqm6            1/1     Running             0              15m     192.168.194.45   orbstack   <none>           <none>
+external-secrets   external-secrets-webhook-5d9c67f658-gsp68                    1/1     Running             0              15m     192.168.194.47   orbstack   <none>           <none>
+kube-system        coredns-74668dc745-tq8zg                                     1/1     Running             0              40m     192.168.194.26   orbstack   <none>           <none>
+kube-system        helper-pod-create-pvc-3c25d1d9-89e5-4224-b8e1-c8e184bd5d80   0/1     ContainerCreating   0              0s      <none>           orbstack   <none>           <none>
+kube-system        helper-pod-create-pvc-dd11789f-1fbe-4e4c-9d38-25e17c23037c   0/1     ContainerCreating   0              0s      <none>           orbstack   <none>           <none>
+kube-system        local-path-provisioner-77b9867795-pg29j                      1/1     Running             0              40m     192.168.194.30   orbstack   <none>           <none>
+monitoring         prometheus-server-85ffd585f7-nwxdt                           2/2     Running             5 (115s ago)   3m18s   192.168.194.50   orbstack   <none>           <none>
+vault              vault-0                                                      0/1     Pending             0              0s      <none>           <none>     orbstack         <none>
+
