@@ -1,0 +1,113 @@
+$ kubectl -n vault get pods
+NAME      READY   STATUS    RESTARTS   AGE
+vault-0   0/1     Running   0          4m17s
+
+$ vault status | grep -E '^(Initialized|Sealed|Storage Type|Version)' || true
+Initialized        false
+Sealed             true
+Version            2.0.4
+Storage Type       file
+
+$ umask 077 && vault operator init -key-shares=5 -key-threshold=3 -format=json > .vault-init.json && echo 'unseal keys and root token written to .vault-init.json (mode 600, gitignored)'
+unseal keys and root token written to .vault-init.json (mode 600, gitignored)
+
+$ ls -l .vault-init.json
+-rw-------@ 1 samir  staff  897 25 Nov 20:41 .vault-init.json
+
+$ git check-ignore -v .vault-init.json
+.gitignore:6:.vault-init.json	.vault-init.json
+
+$ vault operator unseal $(jq -r '.unseal_keys_b64[0]' .vault-init.json) | grep -E '^(Sealed|Unseal Progress)'
+Sealed             true
+Unseal Progress    1/3
+
+$ vault operator unseal $(jq -r '.unseal_keys_b64[1]' .vault-init.json) | grep -E '^(Sealed|Unseal Progress)'
+Sealed             true
+Unseal Progress    2/3
+
+$ vault operator unseal $(jq -r '.unseal_keys_b64[2]' .vault-init.json) | grep -E '^(Sealed|Unseal Progress)'
+Sealed          false
+
+$ vault status | grep -E '^(Initialized|Sealed|Total Shares|Threshold)'
+Initialized     true
+Sealed          false
+Total Shares    5
+Threshold       3
+
+$ vault audit list 2>/dev/null | grep -q '^file/' || vault audit enable file file_path=/vault/audit/audit.log
+Success! Enabled the file audit device at: file/
+
+$ vault secrets list | grep -q '^secret/' || vault secrets enable -path=secret -version=2 kv
+Success! Enabled the kv secrets engine at: secret/
+
+$ vault kv get secret/textstats/db >/dev/null 2>&1 || vault kv put secret/textstats/db username=textstats password=$(openssl rand -hex 20) >/dev/null && echo stored secret/textstats/db
+stored secret/textstats/db
+
+$ vault kv get secret/backup/pg-backup >/dev/null 2>&1 || vault kv put secret/backup/pg-backup access_key=pg-backup-$(openssl rand -hex 4) secret_key=$(openssl rand -hex 24) >/dev/null && echo stored secret/backup/pg-backup
+stored secret/backup/pg-backup
+
+$ vault kv get secret/backup/seaweedfs-admin >/dev/null 2>&1 || vault kv put secret/backup/seaweedfs-admin access_key=admin-$(openssl rand -hex 4) secret_key=$(openssl rand -hex 24) >/dev/null && echo stored secret/backup/seaweedfs-admin
+stored secret/backup/seaweedfs-admin
+
+$ vault kv list secret/textstats
+Keys
+----
+db
+
+$ vault kv list secret/backup
+Keys
+----
+pg-backup
+seaweedfs-admin
+
+$ vault kv metadata get secret/textstats/db | grep -E '^(created_time|current_version|max_versions)'
+created_time            2026-11-25T15:11:18.35679508Z
+current_version         1
+max_versions            0
+created_time     2026-11-25T15:11:18.35679508Z
+
+$ vault policy write textstats-read - <<'HCL'
+path "secret/data/textstats/*"      { capabilities = ["read"] }
+path "secret/data/backup/pg-backup" { capabilities = ["read"] }
+HCL
+Success! Uploaded policy: textstats-read
+
+$ vault policy write backup-read - <<'HCL'
+path "secret/data/backup/*" { capabilities = ["read"] }
+HCL
+Success! Uploaded policy: backup-read
+
+$ vault auth list | grep -q '^kubernetes/' || vault auth enable kubernetes
+Success! Enabled kubernetes auth method at: kubernetes/
+
+$ vault write auth/kubernetes/config kubernetes_host=https://kubernetes.default.svc
+Success! Data written to: auth/kubernetes/config
+
+$ vault write auth/kubernetes/role/textstats bound_service_account_names=textstats-secrets bound_service_account_namespaces=textstats policies=textstats-read token_ttl=15m
+WARNING! The following warnings were returned from Vault:
+
+  * Role textstats does not have an audience configured. While audiences are
+  not required, consider specifying one if your use case would benefit from
+  additional JWT claim verification.
+
+
+$ vault write auth/kubernetes/role/backup bound_service_account_names=backup-secrets bound_service_account_namespaces=backup policies=backup-read token_ttl=15m
+WARNING! The following warnings were returned from Vault:
+
+  * Role backup does not have an audience configured. While audiences are
+  not required, consider specifying one if your use case would benefit from
+  additional JWT claim verification.
+
+
+$ vault read -format=json auth/kubernetes/role/textstats | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, policies, token_ttl}'
+{"bound_service_account_names":["textstats-secrets"],"bound_service_account_namespaces":["textstats"],"policies":["textstats-read"],"token_ttl":900}
+
+$ vault write auth/kubernetes/role/textstats bound_service_account_names=textstats-secrets bound_service_account_namespaces=textstats policies=textstats-read audience=vault token_ttl=15m
+Success! Data written to: auth/kubernetes/role/textstats
+
+$ vault write auth/kubernetes/role/backup bound_service_account_names=backup-secrets bound_service_account_namespaces=backup policies=backup-read audience=vault token_ttl=15m
+Success! Data written to: auth/kubernetes/role/backup
+
+$ vault read -format=json auth/kubernetes/role/textstats | jq -c '.data | {bound_service_account_names, bound_service_account_namespaces, audience, policies, token_ttl}'
+{"bound_service_account_names":["textstats-secrets"],"bound_service_account_namespaces":["textstats"],"audience":"vault","policies":["textstats-read"],"token_ttl":900}
+
