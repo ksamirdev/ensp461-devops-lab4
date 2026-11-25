@@ -1,5 +1,6 @@
 """Integration tests: the app against a real PostgreSQL server. Needs DATABASE_URL."""
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -41,3 +42,18 @@ def test_unreachable_database_is_reported_not_crashed(client, monkeypatch):
     monkeypatch.setattr(web, "DATABASE_URL", "postgresql://nobody:x@127.0.0.1:1/none")
     assert client.get("/readyz").status_code == 503
     assert client.post("/stats", json={"text": "lost"}).status_code == 503
+
+
+def test_concurrent_first_writes_create_the_schema_once(client, monkeypatch):
+    # Regression: 10 pods starting together raced on CREATE TABLE and 3 writes returned 503
+    with web.db() as conn:
+        conn.execute("DROP TABLE IF EXISTS analyses")
+    monkeypatch.setattr(web, "_schema_ready", False)
+
+    def first_write(_):
+        monkeypatch.setattr(web, "_schema_ready", False)  # every "pod" believes it is first
+        return web.app.test_client().post("/stats", json={"text": "cold start"}).status_code
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        codes = list(pool.map(first_write, range(10)))
+    assert codes == [200] * 10
