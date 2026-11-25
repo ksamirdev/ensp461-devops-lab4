@@ -52,10 +52,16 @@ def db():
 _schema_ready = False
 
 
-def ensure_schema(conn):
+def ensure_schema():
+    """Create the table once per process, in its own transaction, before the first query uses it."""
     global _schema_ready
     if not _schema_ready:
-        conn.execute(SCHEMA)
+        with db() as conn:
+            # Many pods start at once and CREATE TABLE IF NOT EXISTS is not safe to run concurrently
+            # in PostgreSQL, so the first one creates it while the others wait on this transaction lock
+            conn.execute("SELECT pg_advisory_xact_lock(461)")
+            conn.execute(SCHEMA)
+        # Set only after the commit: other threads must not insert before the table is visible
         _schema_ready = True
 
 
@@ -104,11 +110,13 @@ def healthz():
 
 @app.get("/readyz")
 def readyz():
-    """Readiness: the pod can serve real traffic, including reaching its database when it has one."""
+    """Deployment check: the pod can serve real traffic, including writing to its database when it has one.
+    Used by staging smoke tests; production readiness uses /healthz so a DB failover does not empty the Service."""
     if DATABASE_URL:
         try:
+            ensure_schema()
             with db() as conn:
-                ensure_schema(conn)
+                conn.execute("SELECT 1")
         except psycopg.Error as exc:
             return jsonify(ready=False, error=type(exc).__name__), 503
     return jsonify(ready=True, release=RELEASE)
@@ -130,8 +138,8 @@ def stats():
     result = text_stats(text)
     if DATABASE_URL:
         try:
+            ensure_schema()
             with db() as conn:
-                ensure_schema(conn)
                 row = conn.execute(
                     "INSERT INTO analyses (characters, words, release) VALUES (%s, %s, %s) RETURNING id",
                     (result["characters"], result["words"], RELEASE),
@@ -148,8 +156,8 @@ def analyses():
     if not DATABASE_URL:
         return jsonify(error="no database configured"), 404
     try:
+        ensure_schema()
         with db() as conn:
-            ensure_schema(conn)
             count, last_id = conn.execute("SELECT count(*), coalesce(max(id), 0) FROM analyses").fetchone()
     except psycopg.Error:
         return jsonify(error="database unavailable"), 503
