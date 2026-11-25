@@ -1,0 +1,114 @@
+# text-stats released as a canary: each new version starts on 1 of 10 pods (10% of traffic),
+# grows to 30% and 60%, and must pass a Prometheus-based analysis after each step. A failed check aborts the
+# rollout and scales the canary back to zero, leaving all traffic on the stable version.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: text-stats
+spec:
+  replicas: 10
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels: {app: text-stats}
+  template:
+    metadata:
+      labels: {app: text-stats}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.0
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: textstats-database-url, key: DATABASE_URL}}
+          ports: [{containerPort: 5000}]
+          # Readiness does not depend on the database: during a DB failover the pods keep serving
+          # reads and return 503 on writes, instead of all leaving the Service at once.
+          readinessProbe:
+            httpGet: {path: /healthz, port: 5000}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: 5000}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  strategy:
+    canary:
+      # After each traffic step the canary must pass its health analysis before it gets more traffic
+      steps:
+        - setWeight: 10
+        - pause: {duration: 30s}
+        - analysis:
+            templates: [{templateName: canary-health}]
+            args:
+              - name: canary-hash
+                valueFrom: {podTemplateHashValue: Latest}
+        - setWeight: 30
+        - pause: {duration: 30s}
+        - analysis:
+            templates: [{templateName: canary-health}]
+            args:
+              - name: canary-hash
+                valueFrom: {podTemplateHashValue: Latest}
+        - setWeight: 60
+        - pause: {duration: 30s}
+        - analysis:
+            templates: [{templateName: canary-health}]
+            args:
+              - name: canary-hash
+                valueFrom: {podTemplateHashValue: Latest}
+        - setWeight: 100
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: canary-health
+spec:
+  args:
+    - name: canary-hash
+  metrics:
+    # Share of /stats requests on canary pods that returned 5xx, over the last minute
+    - name: error-rate
+      interval: 20s
+      count: 3
+      failureLimit: 1
+      successCondition: result[0] <= 0.02
+      provider:
+        prometheus:
+          address: http://prometheus-server.monitoring.svc
+          query: |
+            (sum(rate(textstats_http_requests_total{route="/stats",status=~"5..",rollouts_pod_template_hash="{{args.canary-hash}}"}[1m])) or vector(0))
+            /
+            sum(rate(textstats_http_requests_total{route="/stats",rollouts_pod_template_hash="{{args.canary-hash}}"}[1m]))
+    # 95th percentile latency of /stats on canary pods
+    - name: p95-latency-seconds
+      interval: 20s
+      count: 3
+      failureLimit: 1
+      successCondition: result[0] < 0.25
+      provider:
+        prometheus:
+          address: http://prometheus-server.monitoring.svc
+          query: |
+            histogram_quantile(0.95, sum by (le) (rate(textstats_http_request_duration_seconds_bucket{route="/stats",rollouts_pod_template_hash="{{args.canary-hash}}"}[1m])))
+---
+# User-facing Service: selects every text-stats pod, so the canary's share of traffic equals its share of pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: text-stats
+spec:
+  selector: {app: text-stats}
+  ports: [{port: 80, targetPort: 5000}]

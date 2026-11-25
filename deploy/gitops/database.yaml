@@ -1,0 +1,67 @@
+# PostgreSQL for text-stats: one primary and one streaming replica on separate pods.
+# CloudNativePG promotes the replica automatically if the primary fails, and the
+# textstats-db-rw Service always points at the current primary.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: textstats-db
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:18
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: textstats
+      owner: textstats
+      secret:
+        name: textstats-db-credentials
+  managed:
+    roles:
+      # Keeps the role's password equal to the Vault-backed secret, so rotating it in Vault rotates it here
+      - name: textstats
+        ensure: present
+        login: true
+        passwordSecret:
+          name: textstats-db-credentials
+  postgresql:
+    parameters:
+      # Ship a WAL segment at least every 60 s even when idle: this bounds the RPO of a restore from backup
+      archive_timeout: "60s"
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: textstats-backups
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: textstats-backups
+spec:
+  retentionPolicy: "7d"
+  configuration:
+    destinationPath: s3://pg-backups/
+    endpointURL: http://seaweedfs.backup.svc:8333
+    s3Credentials:
+      accessKeyId: {name: textstats-backup-s3, key: ACCESS_KEY_ID}
+      secretAccessKey: {name: textstats-backup-s3, key: ACCESS_SECRET_KEY}
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+---
+# Base backup every 30 minutes, plus one as soon as the cluster exists. WAL archiving runs continuously in between.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: textstats-db-every-30m
+spec:
+  schedule: "0 */30 * * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: textstats-db
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
