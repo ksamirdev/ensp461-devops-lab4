@@ -1,0 +1,71 @@
+$ gh run view 45637794856 --repo ksamirdev/ensp461-devops-lab4
+
+✓ main pipeline · 45637794856
+Triggered via push about 48 minutes ago
+
+JOBS
+✓ unit-tests in 22s (ID 139287829202)
+✓ secret-scan in 8s (ID 139287830219)
+✓ integration-tests in 21s (ID 139288125815)
+✓ build in 18s (ID 139288408582)
+✓ deploy-staging in 1m11s (ID 139288654891)
+✓ publish in 21s (ID 139289469167)
+
+ARTIFACTS
+integration-test-results
+unit-test-results
+image
+
+For more information about a job, try: gh run view --job=<job-id>
+View this run on GitHub: https://github.com/ksamirdev/ensp461-devops-lab4/actions/runs/45637794856
+
+$ gh run view 45645419739 --repo ksamirdev/ensp461-devops-lab4
+
+X main pipeline · 45645419739
+Triggered via push about 7 minutes ago
+
+JOBS
+✓ unit-tests in 12s (ID 139314996286)
+✓ secret-scan in 6s (ID 139314996651)
+X integration-tests in 31s (ID 139315189225)
+  ✓ Set up job
+  ✓ Initialize containers
+  ✓ Run actions/checkout@v7
+  ✓ Run actions/setup-python@v7
+  ✓ Run pip install -r requirements-dev.txt
+  X Run pytest tests/integration -v --junitxml=test-results-integration.xml
+  ✓ Run actions/upload-artifact@v7
+  - Post Run actions/setup-python@v7
+  ✓ Post Run actions/checkout@v7
+  ✓ Stop containers
+  ✓ Complete job
+- build (ID 139315574330)
+- publish (ID 139315575318)
+- deploy-staging (ID 139315575474)
+
+ANNOTATIONS
+X Process completed with exit code 1.
+integration-tests: .github#114
+
+
+ARTIFACTS
+integration-test-results
+unit-test-results
+
+To see what failed, try: gh run view 45645419739 --log-failed
+View this run on GitHub: https://github.com/ksamirdev/ensp461-devops-lab4/actions/runs/45645419739
+
+$ gh run view 45645419739 --repo ksamirdev/ensp461-devops-lab4 --log-failed | grep -E 'PASSED|FAILED|Error|assert|passed|failed' | awk -F'	' '{print $NF}' | sed -E 's/^[0-9T:.-]+Z //' | head -30
+tests/integration/test_database.py::test_readyz_reaches_database PASSED  [ 20%]
+tests/integration/test_database.py::test_stats_are_persisted PASSED      [ 40%]
+tests/integration/test_database.py::test_rows_record_the_release PASSED  [ 60%]
+tests/integration/test_database.py::test_unreachable_database_is_reported_not_crashed PASSED [ 80%]
+tests/integration/test_database.py::test_concurrent_first_writes_create_the_schema_once FAILED [100%]
+>       assert codes == [200] * 10
+E       assert [503, 200, 20...200, 200, ...] == [200, 200, 20...200, 200, ...]
+tests/integration/test_database.py:59: AssertionError
+2026-11-25 15:28:33,222 ERROR textstats database write failed: type "analyses" already exists
+ERROR    textstats:web.py:141 database write failed: type "analyses" already exists
+FAILED tests/integration/test_database.py::test_concurrent_first_writes_create_the_schema_once - assert [503, 200, 20...200, 200, ...] == [200, 200, 20...200, 200, ...]
+========================= 1 failed, 4 passed in 0.69s ==========================
+
