@@ -90,3 +90,67 @@ $ kubectl -n argocd logs statefulset/argocd-application-controller --since=10m |
 2026-11-25T15:43:03Z  Partial sync operation to fad0ea609fd604f874e1cb2c54a38f0aac2caa3a succeeded
 2026-11-25T15:43:03Z  Updated sync status: OutOfSync -> Synced
 
+$ git log --oneline -4 origin/main
+5cf9a0c Revert "Release a defective build to test the canary rollback trigger"
+2714e74 Record the automatic canary rollback of the defective release
+604cf45 Release a defective build to test the canary rollback trigger
+46e9956 Record Q7 canary of 4.0.1: three analyses passed, promoted to 100%
+
+$ git show --format='%h %ad %s' --date=format:%H:%M:%S origin/main -- deploy/gitops | head -20
+5cf9a0c 21:30:16 Revert "Release a defective build to test the canary rollback trigger"
+
+diff --git a/deploy/gitops/app.yaml b/deploy/gitops/app.yaml
+index 2c44a4a..f1e5e39 100644
+--- a/deploy/gitops/app.yaml
++++ b/deploy/gitops/app.yaml
+@@ -21,9 +21,6 @@ spec:
+         - name: app
+           image: ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1
+           env:
+-            # Simulated defective release for the canary exercise: 30% of /stats requests fail
+-            - name: FAULT_RATE
+-              value: "0.3"
+             - name: DATABASE_URL
+               valueFrom: {secretKeyRef: {name: textstats-database-url, key: DATABASE_URL}}
+           ports: [{containerPort: 5000}]
+
+$ kubectl -n argocd get application textstats
+NAME        SYNC STATUS   HEALTH STATUS
+textstats   Synced        Degraded
+
+$ until [ "$(kubectl -n argocd get application textstats -o jsonpath='{.status.sync.revision}')" = 5cf9a0c4eae230b3194dd136dcabd4e0c7f20285 ]; do sleep 2; done; echo "Argo CD synced 5cf9a0c at $(date -u +%H:%M:%S)"
+Argo CD synced 5cf9a0c at 16:03:06
+
+$ until [ "$(kubectl -n argocd get application textstats -o jsonpath='{.status.health.status}')" = Healthy ]; do sleep 2; done; echo "application Healthy at $(date -u +%H:%M:%S)"
+application Healthy at 16:03:09
+
+$ kubectl -n argocd get application textstats
+NAME        SYNC STATUS   HEALTH STATUS
+textstats   Synced        Healthy
+
+$ kubectl argo rollouts get rollout text-stats -n textstats --no-color | head -12
+Name:            text-stats
+Namespace:       textstats
+Status:          ✔ Healthy
+Strategy:        Canary
+  Step:          10/10
+  SetWeight:     100
+  ActualWeight:  100
+Images:          ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1 (stable)
+Replicas:
+  Desired:       10
+  Current:       10
+  Updated:       10
+
+$ kubectl -n argocd get application textstats -o jsonpath='{range .status.history[*]}{.id}  {.revision}  {.deployedAt}{"\n"}{end}'
+0  ea8cfeaaecc9ef81f383af2a518baa401553f435  2026-11-25T15:12:53Z
+1  fad0ea609fd604f874e1cb2c54a38f0aac2caa3a  2026-11-25T15:43:01Z
+2  604bf18b5f236e83fdef21da196fc7880ea9e8a4  2026-11-25T15:46:47Z
+3  604cf45e0eacb1fb8943ec471a98b4984a10d8c0  2026-11-25T15:58:47Z
+4  5cf9a0c4eae230b3194dd136dcabd4e0c7f20285  2026-11-25T16:03:08Z
+
+$ kubectl -n argocd logs statefulset/argocd-application-controller --since=20m | jq -r 'select(.reason and (.msg | test("sync"))) | .time + "  " + .msg' | grep -E 'Initiated|succeeded' | tail -8
+2026-11-25T15:46:46Z  Initiated automated sync to '604bf18b5f236e83fdef21da196fc7880ea9e8a4'
+2026-11-25T15:58:44Z  Initiated automated sync to '604cf45e0eacb1fb8943ec471a98b4984a10d8c0'
+2026-11-25T16:03:06Z  Initiated automated sync to '5cf9a0c4eae230b3194dd136dcabd4e0c7f20285'
+
