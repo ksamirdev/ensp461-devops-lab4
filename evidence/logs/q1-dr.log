@@ -1,0 +1,25 @@
+$ kubectl create namespace backup --dry-run=client -o yaml | kubectl apply -f -
+namespace/backup created
+
+$ kubectl apply -f deploy/backup/seaweedfs.yaml
+serviceaccount/backup-secrets created
+secretstore.external-secrets.io/vault created
+externalsecret.external-secrets.io/seaweedfs-s3-config created
+persistentvolumeclaim/seaweedfs-data created
+deployment.apps/seaweedfs created
+service/seaweedfs created
+
+$ kubectl -n backup wait externalsecret/seaweedfs-s3-config --for=condition=Ready --timeout=120s
+externalsecret.external-secrets.io/seaweedfs-s3-config condition met
+
+$ kubectl -n backup rollout status deploy/seaweedfs --timeout=300s
+Waiting for deployment "seaweedfs" rollout to finish: 0 of 1 updated replicas are available...
+deployment "seaweedfs" successfully rolled out
+
+$ kubectl -n backup exec deploy/seaweedfs -- sh -c 'echo s3.bucket.create -name pg-backups | weed shell -master=localhost:9333' 2>&1 | tail -2
+create bucket under /buckets
+created bucket pg-backups
+
+$ kubectl -n backup exec deploy/seaweedfs -- sh -c 'echo s3.bucket.list | weed shell -master=localhost:9333' 2>&1 | grep pg-backups
+  pg-backups	size:0	logical:0	chunk:0
+

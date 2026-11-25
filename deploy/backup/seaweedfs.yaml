@@ -1,0 +1,111 @@
+# Off-cluster-style object storage for database backups (S3 API on :8333).
+# Its access keys come from Vault through External Secrets; nothing secret is in this file.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-secrets
+  namespace: backup
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: vault
+  namespace: backup
+spec:
+  provider:
+    vault:
+      server: http://vault.vault.svc:8200
+      path: secret
+      version: v2
+      auth:
+        kubernetes:
+          mountPath: kubernetes
+          role: backup
+          serviceAccountRef:
+            name: backup-secrets
+            # token is only valid for Vault
+            audiences: [vault]
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: seaweedfs-s3-config
+  namespace: backup
+spec:
+  refreshInterval: 1m
+  secretStoreRef: {kind: SecretStore, name: vault}
+  target:
+    name: seaweedfs-s3-config
+    template:
+      data:
+        s3.json: |
+          {"identities": [
+            {"name": "admin",
+             "credentials": [{"accessKey": "{{ .admin_access_key }}", "secretKey": "{{ .admin_secret_key }}"}],
+             "actions": ["Admin", "Read", "List", "Tagging", "Write"]},
+            {"name": "pg-backup",
+             "credentials": [{"accessKey": "{{ .pg_access_key }}", "secretKey": "{{ .pg_secret_key }}"}],
+             "actions": ["Read:pg-backups", "List:pg-backups", "Write:pg-backups", "Tagging:pg-backups"]}
+          ]}
+  data:
+    - secretKey: admin_access_key
+      remoteRef: {key: backup/seaweedfs-admin, property: access_key}
+    - secretKey: admin_secret_key
+      remoteRef: {key: backup/seaweedfs-admin, property: secret_key}
+    - secretKey: pg_access_key
+      remoteRef: {key: backup/pg-backup, property: access_key}
+    - secretKey: pg_secret_key
+      remoteRef: {key: backup/pg-backup, property: secret_key}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seaweedfs-data
+  namespace: backup
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 5Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: backup
+spec:
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: seaweedfs}
+  template:
+    metadata:
+      labels: {app: seaweedfs}
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.55
+          args: [server, -dir=/data, -s3, -s3.config=/etc/seaweedfs/s3.json, -master.volumeSizeLimitMB=256, -volume.max=20]
+          ports:
+            - {name: s3, containerPort: 8333}
+            - {name: filer, containerPort: 8888}
+          readinessProbe:
+            tcpSocket: {port: 8333}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: s3-config, mountPath: /etc/seaweedfs, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: seaweedfs-data}
+        - name: s3-config
+          secret: {secretName: seaweedfs-s3-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  namespace: backup
+spec:
+  selector: {app: seaweedfs}
+  ports:
+    - {name: s3, port: 8333}
+    - {name: filer, port: 8888}
