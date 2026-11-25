@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: app
-          image: ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.0
+          image: ghcr.io/ksamirdev/ensp461-devops-lab4:4.0.1
           env:
             - name: DATABASE_URL
               valueFrom: {secretKeyRef: {name: textstats-database-url, key: DATABASE_URL}}
